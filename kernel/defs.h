@@ -102,6 +102,17 @@ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 
+int             getprocinfo(int, uint64);
+
+// MLFQ scheduler
+extern int      global_ticks;
+extern int      time_quantum[];
+void            mlfq_init_proc(struct proc*);
+void            mlfq_demote(struct proc*);
+void            mlfq_promote(struct proc*);
+void            mlfq_priority_boost(void);
+struct proc*    mlfq_pick_next(void);
+
 // swtch.S
 void            swtch(struct context*, struct context*);
 

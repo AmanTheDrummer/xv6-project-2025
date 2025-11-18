@@ -104,4 +104,19 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  // MLDQ scheduling fields
+  int queue_level;		// current queue level
+  int time_slices;		// timer ticks used in current quantum
+  int wait_time;		// ticks spent waiting
+  int total_runtime;		// total cpu time
+};
+
+struct procinfo {
+  int pid;
+  int queue_level;
+  int time_slices;
+  int wait_time;
+  int total_runtime;
+  char state[16];
 };

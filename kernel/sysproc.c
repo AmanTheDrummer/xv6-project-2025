@@ -8,6 +8,19 @@
 #include "vm.h"
 
 uint64
+sys_getprocinfo(void)
+{
+  int pid;
+  uint64 info_addr;
+  
+  // Get arguments from user space
+  argint(0, &pid);
+  argaddr(1, &info_addr);
+  
+  return getprocinfo(pid, info_addr);
+}
+
+uint64
 sys_exit(void)
 {
   int n;

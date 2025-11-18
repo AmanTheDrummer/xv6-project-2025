@@ -26,6 +26,72 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+#define NQUEUE 4
+#define BOOST_INTERVAL 100
+
+int time_quantum[NQUEUE] = {1, 2, 4, 8};
+int global_ticks = 0;
+
+void
+mlfq_init_proc(struct proc *p)
+{
+  p->queue_level = 0;
+  p->time_slices = 0;
+  p->wait_time = 0;
+  p->total_runtime = 0;
+}
+
+void
+mlfq_demote(struct proc *p)
+{
+  if(p->queue_level < NQUEUE - 1){
+    p->queue_level++;
+    p->time_slices = 0;
+  }
+}
+
+void
+mlfq_promote(struct proc *p)
+{
+  if(p->queue_level > 0){
+    p->queue_level--;
+    p->time_slices = 0;
+  }
+}
+
+void
+mlfq_priority_boost(void)
+{
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      p->queue_level = 0;
+      p->time_slices = 0;
+      p->wait_time = 0;
+    }
+    release(&p->lock);
+  }
+  printf("MLFQ: Priority boost\n");
+}
+
+struct proc*
+mlfq_pick_next(void)
+{
+  struct proc *p;
+  
+  for(int queue = 0; queue < NQUEUE; queue++){
+    for(p = proc; p < &proc[NPROC]; p++){
+      acquire(&p->lock);
+      if(p->state == RUNNABLE && p->queue_level == queue){
+        return p; // Return with lock held
+      }
+      release(&p->lock);
+    }
+  }
+  return 0;
+}
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -113,6 +179,7 @@ allocproc(void)
 
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
+    mlfq_init_proc(p);
     if(p->state == UNUSED) {
       goto found;
     } else {
@@ -426,38 +493,24 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-
   c->proc = 0;
+  
   for(;;){
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
     intr_on();
-    intr_off();
-
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
-      }
-      release(&p->lock);
+    
+    if(global_ticks >= BOOST_INTERVAL){
+      mlfq_priority_boost();
+      global_ticks = 0;
     }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
-      asm volatile("wfi");
+    
+    p = mlfq_pick_next();
+    
+    if(p != 0){
+      p->state = RUNNING;
+      c->proc = p;
+      swtch(&c->context, &p->context);
+      c->proc = 0;
+      release(&p->lock);
     }
   }
 }
@@ -687,4 +740,45 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// get proc info function
+int
+getprocinfo(int pid, uint64 addr)
+{
+  struct proc *p;
+  struct procinfo info;
+  
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->pid == pid){
+      info.pid = p->pid;
+      info.queue_level = p->queue_level;
+      info.time_slices = p->time_slices;
+      info.wait_time = p->wait_time;
+      info.total_runtime = p->total_runtime;
+      
+      // Copy state as string
+      switch(p->state){
+        case UNUSED:   safestrcpy(info.state, "UNUSED", 16); break;
+        case USED:     safestrcpy(info.state, "USED", 16); break;
+        case SLEEPING: safestrcpy(info.state, "SLEEPING", 16); break;
+        case RUNNABLE: safestrcpy(info.state, "RUNNABLE", 16); break;
+        case RUNNING:  safestrcpy(info.state, "RUNNING", 16); break;
+        case ZOMBIE:   safestrcpy(info.state, "ZOMBIE", 16); break;
+        default:       safestrcpy(info.state, "UNKNOWN", 16); break;
+      }
+      
+      release(&p->lock);
+      
+      // Copy info to user space - USE CALLING PROCESS'S PAGE TABLE
+      if(copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info)) < 0)
+        return -1;
+
+      return 0;
+    }
+    release(&p->lock);
+  }
+  
+  return -1; // Process not found
 }

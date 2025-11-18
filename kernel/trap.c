@@ -38,14 +38,14 @@ uint64
 usertrap(void)
 {
   int which_dev = 0;
-
+  
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
-
+  
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);  //DOC: kernelvec
-
+  w_stvec((uint64)kernelvec);
+  
   struct proc *p = myproc();
   
   // save user program counter.
@@ -53,21 +53,20 @@ usertrap(void)
   
   if(r_scause() == 8){
     // system call
-
     if(killed(p))
       kexit(-1);
-
+    
     // sepc points to the ecall instruction,
     // but we want to return to the next instruction.
     p->trapframe->epc += 4;
-
+    
     // an interrupt will change sepc, scause, and sstatus,
     // so enable only now that we're done with those registers.
     intr_on();
-
+    
     syscall();
   } else if((which_dev = devintr()) != 0){
-    // ok
+    // ok - device interrupt handled
   } else if((r_scause() == 15 || r_scause() == 13) &&
             vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
     // page fault on lazily-allocated page
@@ -76,19 +75,33 @@ usertrap(void)
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
     setkilled(p);
   }
-
+  
   if(killed(p))
     kexit(-1);
-
+  
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    // MLFQ: Update global tick counter
+    global_ticks++;
+    
+    // MLFQ: Update current process statistics
+    p->time_slices++;
+    p->total_runtime++;
+    
+    // MLFQ: Check if time quantum expired
+    int quantum = time_quantum[p->queue_level];
+    if(p->time_slices >= quantum){
+      mlfq_demote(p);
+    }
+    
     yield();
-
+  }
+  
   prepare_return();
-
+  
   // the user page table to switch to, for trampoline.S
   uint64 satp = MAKE_SATP(p->pagetable);
-
+  
   // return to trampoline.S; satp value in a0.
   return satp;
 }
