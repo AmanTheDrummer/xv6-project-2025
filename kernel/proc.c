@@ -6,6 +6,12 @@
 #include "proc.h"
 #include "defs.h"
 
+#define NMLFQ 4
+
+int time_quantum[NMLFQ] = {5, 10, 20, 40};
+
+#define PRIORITY_BOOST 100
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -26,10 +32,8 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
-#define NQUEUE 4
 #define BOOST_INTERVAL 100
 
-int time_quantum[NQUEUE] = {1, 2, 4, 8};
 int global_ticks = 0;
 
 void
@@ -44,7 +48,7 @@ mlfq_init_proc(struct proc *p)
 void
 mlfq_demote(struct proc *p)
 {
-  if(p->queue_level < NQUEUE - 1){
+  if(p->queue_level < NMLFQ - 1){
     p->queue_level++;
     p->time_slices = 0;
   }
@@ -80,7 +84,7 @@ mlfq_pick_next(void)
 {
   struct proc *p;
   
-  for(int queue = 0; queue < NQUEUE; queue++){
+  for(int queue = 0; queue < NMLFQ; queue++){
     for(p = proc; p < &proc[NPROC]; p++){
       acquire(&p->lock);
       if(p->state == RUNNABLE && p->queue_level == queue){
@@ -176,10 +180,8 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    mlfq_init_proc(p);
     if(p->state == UNUSED) {
       goto found;
     } else {
@@ -191,14 +193,14 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
   }
-
+  
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -206,13 +208,19 @@ found:
     release(&p->lock);
     return 0;
   }
-
+  
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // Initialize MLFQ fields (only for this new process!)
+  p->queue_level = 0;
+  p->time_slices = 0;
+  p->wait_time = 0;
+  p->total_runtime = 0;
+  
   return p;
 }
 
@@ -495,22 +503,40 @@ scheduler(void)
   struct cpu *c = mycpu();
   c->proc = 0;
   
-  for(;;){
-    intr_on();
+  for(;;) {
+    intr_on();  // Enable interrupts
     
-    if(global_ticks >= BOOST_INTERVAL){
-      mlfq_priority_boost();
-      global_ticks = 0;
+    // IMPORTANT: Update wait_time for all RUNNABLE processes
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        p->wait_time++;
+      }
+      release(&p->lock);
     }
     
-    p = mlfq_pick_next();
-    
-    if(p != 0){
-      p->state = RUNNING;
-      c->proc = p;
-      swtch(&c->context, &p->context);
-      c->proc = 0;
-      release(&p->lock);
+    // Iterate through priority queues from highest (0) to lowest (NMLFQ-1)
+    for(int level = 0; level < NMLFQ; level++) {
+      int found = 0;
+      // Round-robin within this queue level
+      for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE && p->queue_level == level) {
+          // Found a runnable process at this queue level
+          p->state = RUNNING;
+          c->proc = p;
+          
+          // Context switch to the process
+          swtch(&c->context, &p->context);
+          
+          // Process has yielded CPU back to scheduler
+          c->proc = 0;
+          found = 1;
+        }
+        release(&p->lock);
+        if(found) break;  // Stay at this priority level
+      }
+      if(found) break;  // Restart from highest priority
     }
   }
 }
@@ -548,6 +574,20 @@ yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
+  
+  // Check if process used its full quantum
+  int quantum = time_quantum[p->queue_level];
+  if(p->time_slices >= quantum) {
+    // Used full quantum - demote (CPU-bound behavior)
+    if(p->queue_level < NMLFQ - 1) {
+      printf("[MLFQ] PID %d demoted: %d -> %d\n",
+             p->pid, p->queue_level, p->queue_level + 1);
+      p->queue_level++;
+    }
+  }
+  // Always reset time_slices when yielding
+  p->time_slices = 0;
+  
   p->state = RUNNABLE;
   sched();
   release(&p->lock);
@@ -610,6 +650,7 @@ sleep(void *chan, struct spinlock *lk)
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
+  p->time_slices = 0;
 
   sched();
 

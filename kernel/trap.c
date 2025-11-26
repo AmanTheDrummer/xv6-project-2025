@@ -6,6 +6,9 @@
 #include "proc.h"
 #include "defs.h"
 
+static int boost_counter = 0;
+#define PRIORITY_BOOST 100
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -38,7 +41,6 @@ uint64
 usertrap(void)
 {
   int which_dev = 0;
-  
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
   
@@ -81,19 +83,15 @@ usertrap(void)
   
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2){
-    // MLFQ: Update global tick counter
-    global_ticks++;
-    
     // MLFQ: Update current process statistics
     p->time_slices++;
     p->total_runtime++;
-    
-    // MLFQ: Check if time quantum expired
-    int quantum = time_quantum[p->queue_level];
-    if(p->time_slices >= quantum){
-      mlfq_demote(p);
+    // Priority Boost to prevent starvation
+    boost_counter++;
+    if(boost_counter >= PRIORITY_BOOST){
+      mlfq_priority_boost();
+      boost_counter = 0;
     }
-    
     yield();
   }
   
@@ -229,4 +227,5 @@ devintr()
     return 0;
   }
 }
+
 

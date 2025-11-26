@@ -2,7 +2,8 @@
 
 struct stat;
 struct procinfo;
-int getprocinfo(int pic, struct procinfo *info);
+int getprocinfo(struct procinfo *info);
+int sleep(int);
 
 // system calls
 int fork(void);

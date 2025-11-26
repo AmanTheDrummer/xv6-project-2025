@@ -106,7 +106,7 @@ int             getprocinfo(int, uint64);
 
 // MLFQ scheduler
 extern int      global_ticks;
-extern int      time_quantum[];
+extern int time_quantum[];
 void            mlfq_init_proc(struct proc*);
 void            mlfq_demote(struct proc*);
 void            mlfq_promote(struct proc*);
