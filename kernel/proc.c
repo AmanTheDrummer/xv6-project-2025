@@ -577,6 +577,11 @@ yield(void)
   
   // Check if process used its full quantum
   int quantum = time_quantum[p->queue_level];
+  
+  // Debug print (can remove later)
+ // printf("[DEBUG] PID %d: time_slices=%d, quantum=%d, queue=%d\n",
+   //      p->pid, p->time_slices, quantum, p->queue_level);
+  
   if(p->time_slices >= quantum) {
     // Used full quantum - demote (CPU-bound behavior)
     if(p->queue_level < NMLFQ - 1) {
@@ -584,9 +589,10 @@ yield(void)
              p->pid, p->queue_level, p->queue_level + 1);
       p->queue_level++;
     }
+    // ONLY reset time_slices when we demote or stay at lowest level
+    p->time_slices = 0;
   }
-  // Always reset time_slices when yielding
-  p->time_slices = 0;
+  // DON'T reset time_slices here if we haven't used full quantum!
   
   p->state = RUNNABLE;
   sched();

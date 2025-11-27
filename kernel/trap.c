@@ -7,7 +7,7 @@
 #include "defs.h"
 
 static int boost_counter = 0;
-#define PRIORITY_BOOST 100
+#define PRIORITY_BOOST 1000
 
 struct spinlock tickslock;
 uint ticks;
